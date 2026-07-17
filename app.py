@@ -1,116 +1,199 @@
 import streamlit as st
 import pandas as pd
-from io import BytesIO
 from pathlib import Path
+from datetime import datetime
+import os
 
+# ------------------------------
+# Page Configuration
+# ------------------------------
 st.set_page_config(
-    page_title="Excel Directory Combiner",
+    page_title="Excel Sheet Combiner",
     page_icon="📊",
     layout="wide"
 )
 
+# ------------------------------
+# Helper Function
+# ------------------------------
+def combine_excel_files(folder_path, target_sheet):
+    folder = Path(folder_path)
 
-class ExcelDirectoryCombiner:
-    def __init__(self, uploaded_files, target_sheets=None):
-        self.uploaded_files = uploaded_files
-        self.target_sheets = target_sheets or []
+    if not folder.exists():
+        raise FileNotFoundError("Folder does not exist.")
 
-    def combine_files(self):
-        combined_data = []
+    excel_files = list(folder.glob("*.xlsx"))
 
-        for uploaded_file in self.uploaded_files:
-            try:
-                sheets = pd.read_excel(uploaded_file, sheet_name=None)
+    if not excel_files:
+        raise FileNotFoundError("No .xlsx files found in the selected folder.")
 
-                for sheet_name, df in sheets.items():
+    combined_data = []
 
-                    # Process only selected sheets
-                    if not self.target_sheets or sheet_name in self.target_sheets:
+    progress_bar = st.progress(0)
+    status_text = st.empty()
 
-                        df["Source_File"] = uploaded_file.name
-                        df["Source_Sheet"] = sheet_name
+    total_files = len(excel_files)
 
-                        combined_data.append(df)
+    for index, file in enumerate(excel_files):
 
-            except Exception as e:
-                st.error(f"Error processing {uploaded_file.name}: {e}")
-
-        if combined_data:
-            return pd.concat(combined_data, ignore_index=True, sort=False)
-
-        return pd.DataFrame()
-
-    def save_to_excel(self, dataframe):
-        output = BytesIO()
-
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            dataframe.to_excel(
-                writer,
-                sheet_name="Combined_Data",
-                index=False
+        try:
+            status_text.info(
+                f"Processing {index + 1}/{total_files}: {file.name}"
             )
 
-        output.seek(0)
-        return output
+            # Read ONLY required sheet
+            df = pd.read_excel(
+                file,
+                sheet_name=target_sheet,
+                engine="openpyxl"
+            )
+
+            df["Source_File"] = file.name
+            df["Source_Sheet"] = target_sheet
+
+            combined_data.append(df)
+
+        except ValueError:
+            st.warning(
+                f"Sheet '{target_sheet}' not found in {file.name}"
+            )
+
+        except Exception as e:
+            st.error(
+                f"Error processing {file.name}: {str(e)}"
+            )
+
+        progress_bar.progress((index + 1) / total_files)
+
+    status_text.empty()
+
+    if combined_data:
+        return pd.concat(
+            combined_data,
+            ignore_index=True,
+            sort=False
+        )
+
+    return pd.DataFrame()
 
 
+def save_output(df, output_file):
+    df.to_excel(
+        output_file,
+        index=False,
+        engine="openpyxl"
+    )
+
+
+# ------------------------------
+# UI
+# ------------------------------
 st.title("📊 Excel Directory Combiner")
 
-st.markdown(
-    """
-    Upload multiple Excel files and combine data from a specific worksheet
-    across all files.
-    """
-)
+st.markdown("""
+Combine a specific worksheet from multiple Excel files.
 
-uploaded_files = st.file_uploader(
-    "Upload Excel Files",
-    type=["xlsx"],
-    accept_multiple_files=True
+**Recommended for large files (>200 MB)**
+
+Features:
+- Process files directly from folder
+- Reads only required worksheet
+- Adds Source File tracking
+- Progress monitoring
+- Export combined output
+""")
+
+folder_path = st.text_input(
+    "Input Folder Path",
+    value=r"D:\DCT_Files"
 )
 
 sheet_name = st.text_input(
-    "Worksheet Name to Combine",
+    "Sheet Name",
     value="Asset Attribute Mappings"
 )
 
-if uploaded_files:
+output_file = st.text_input(
+    "Output File Path",
+    value=r"D:\DCT_Files\Combined_DCT.xlsx"
+)
 
-    st.success(f"{len(uploaded_files)} file(s) uploaded")
+remove_duplicates = st.checkbox(
+    "Remove Duplicate Rows",
+    value=False
+)
 
-    if st.button("Combine Files"):
+# ------------------------------
+# Process Button
+# ------------------------------
+if st.button("Combine Files", type="primary"):
 
-        with st.spinner("Processing files..."):
+    try:
 
-            combiner = ExcelDirectoryCombiner(
-                uploaded_files=uploaded_files,
-                target_sheets=[sheet_name]
-            )
+        start_time = datetime.now()
 
-            combined_df = combiner.combine_files()
+        result_df = combine_excel_files(
+            folder_path=folder_path,
+            target_sheet=sheet_name
+        )
 
-        if not combined_df.empty:
+        if result_df.empty:
+            st.warning("No data found.")
+            st.stop()
+
+        if remove_duplicates:
+
+            before = len(result_df)
+
+            result_df = result_df.drop_duplicates()
+
+            after = len(result_df)
 
             st.success(
-                f"Successfully combined {len(combined_df)} rows."
+                f"Removed {before - after:,} duplicate rows."
             )
 
-            st.dataframe(
-                combined_df,
-                use_container_width=True,
-                height=500
+        st.success(
+            f"Successfully combined {len(result_df):,} rows."
+        )
+
+        save_output(
+            result_df,
+            output_file
+        )
+
+        elapsed = datetime.now() - start_time
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.metric(
+                "Rows",
+                f"{len(result_df):,}"
             )
 
-            excel_file = combiner.save_to_excel(combined_df)
-
-            st.download_button(
-                label="📥 Download Combined Excel",
-                data=excel_file,
-                file_name="Combined_DCT.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        with col2:
+            st.metric(
+                "Columns",
+                result_df.shape[1]
             )
 
-        else:
-            st.warning(
-                "No matching worksheet found in uploaded files."
+        with col3:
+            st.metric(
+                "Time",
+                str(elapsed).split(".")[0]
             )
+
+        st.subheader("Preview")
+
+        st.dataframe(
+            result_df.head(100),
+            use_container_width=True
+        )
+
+        st.success(
+            f"Output saved successfully:\n\n{output_file}"
+        )
+
+    except Exception as e:
+        st.error(str(e))
